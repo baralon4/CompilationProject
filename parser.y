@@ -12,25 +12,27 @@ int yyerror(char *e);
 typedef struct node
 {
 	char *token;
-	struct node *left;
+    struct node *left;
 	struct node *right;
+    
 }node;
 
 
-struct Scope {
+typedef struct Scope {
     struct Scope* father;
     struct Link* first;
-};
+}Scope;
 
-struct Link {
+typedef struct Link {
     struct Link* next;
     char* name;
     char* type;
     // אפשר להוסיף כאן מידע נוסף כמו ערך או מיקום בקוד (val, line)
-};
+}Link;
 
-int MAIN_DEFINED=0;
+
 int MAIN_COUNT=0;
+int semantic_error = 0;
 
 node *mknode(char *token, node *left, node *right);
 void printtree(node *root, int indent);
@@ -99,35 +101,41 @@ extern char* yytext;
 
 
 %%
-s: program {semanticAnalyzer($1);}
+s:
+	program {
+		semanticAnalyzer($1);
+		if (!semantic_error) {
+			printtree($1, 0);
+			printf("syntax valid\n");
+		}
+	}
+;
+
 program:
 	 function_list main function_list 
 	{
 		$$=mknode("CODE",$1,$2);
-		printtree($$,0);
-		printf("syntax valid\n");
 	}
    
-      |
-        main function_list {$$=mknode("CODE",$1,NULL);
-               printtree($$,0);
-		printf("syntax valid\n");
-        }
+    |
+    main function_list
+    {
+        $$=mknode("CODE",$1,NULL);
+    }
 
-      |
+    |
 
-        main   {$$=mknode("CODE",$1,NULL);
-           printtree($$,0);
-                printf("syntax valid\n");
-        }
+    main
+    {
+        $$=mknode("CODE",$1,NULL);
+    }
      
-      |
+    |
 
-
-       function_list   {$$=mknode("CODE",$1,NULL);
-       printtree($$,0);
-		printf("syntax valid\n");
-      } 
+    function_list
+    {
+        $$=mknode("CODE",$1,NULL);
+    } 
 
 
 function_list:
@@ -200,20 +208,41 @@ function:
 
 parameter_list:
     parameter_list T_SEMICOLON parameter {
-        if ($1 == NULL)
+        // Case: We're adding a new parameter to an existing list.
+        if ($1 == NULL) {
+            // If the existing list is empty, start the list with this parameter.
             $$ = $3;
-        else
-            $$ = mknode("", $1, $3);
+        } else {
+            // Traverse to the end of the current parameter list.
+            node* current = $1;
+            while (current->right != NULL)
+                current = current->right;
+
+            // Append the new parameter to the end of the list.
+            current->right = $3;
+
+            // Return the head of the updated list.
+            $$ = $1;
+        }
     }
-    | parameter { $$ = $1; }
-    | /* empty */ { $$ = NULL; }
+
+    | parameter {
+        // Case: This is the first (and only) parameter so far.
+        $$ = $1;
+    }
+
+    | /* empty */ {
+        // Case: No parameters at all (e.g., empty parameter list)
+        $$ = NULL;
+    }
 ;
+
 
 parameter:
     T_PAR_NUM type T_COLON T_IDENTIFIER_LITERAL {
         char param_str[100];
         sprintf(param_str, "(%s %s %s)", $1, $2->token, $4);
-        $$ = mknode(param_str, NULL, NULL);
+        $$ = mknode(strdup(param_str), NULL, NULL);
     }
 ;
 
@@ -540,7 +569,7 @@ int main()
 
 void printtree(node *root, int indent)
 {
-    if(!root)
+    if(!root || semantic_error==1)
         return;
         
     // Print indentation
@@ -590,6 +619,9 @@ void printtree(node *root, int indent)
         printf("(%s %s %s)\n", root->token, root->left->token, root->right->token);
         return;
     }
+
+
+    
 
 
 if (strcmp(root->token, "DOWHILE") == 0) {
@@ -644,6 +676,30 @@ if (strcmp(root->token, "DOWHILE") == 0) {
     
     // Print opening parenthesis and token
     printf("(%s", root->token);
+
+    // Special handling for PARS node to print each parameter in a row
+if (strcmp(root->token, "PARS") == 0) {
+    printf("\n");
+
+    // Traverse the parameter list stored in left-linked chain
+    node* param = root->left;
+    while (param) {
+        for (int i = 0; i < indent + 4; i++) printf(" ");
+        printf("%s\n", param->token);
+        param = param->right;
+    }
+
+    // After printing parameters, print the rest (like VAR or BODY)
+    if (root->right) {
+        printtree(root->right, indent + 4);
+    }
+
+    // Closing ) for PARS
+    for (int i = 0; i < indent; i++) printf(" ");
+    printf(")\n");
+    return;
+}
+
     
     // Special handling for empty BODY
     if(strcmp(root->token, "BODY") == 0 && !root->left && !root->right) {
@@ -727,35 +783,233 @@ node *mknode(char *token,node *left,node *right)
     newnode->left = left;
     newnode->right = right;
     newnode->token = newstr;
+    newnode->
     return newnode;
 }
 
 
-void checkMainExists(node* root) {
-    if (root == NULL)
-        return;
 
-    // בדיקת קיום של פונקציית main
-    if (strcmp(root->token, "FUNC") == 0 && root->left != NULL &&strcmp(root->left->token, "_main_") == 0) {
-        
-        MAIN_DEFINED = 1;
+// === Function to create a new scope ===
+Scope *createScope(Scope *father) {
+    Scope *s = (Scope *)malloc(sizeof(Scope));
+    s->father = father;
+    s->first = NULL;
+    return s;
+}
+
+// === Function to add a symbol to a scope ===
+void addSymbol(Scope *scope, char *name, char *type) {
+    Link *l = (Link *)malloc(sizeof(Link));
+    l->name = strdup(name);
+    l->type = strdup(type);
+    l->next = scope->first;
+    scope->first = l;
+}
+
+// === Function to search for a symbol in scope or any parent scopes ===
+Link *findSymbol(Scope *scope, char *name) {
+    while (scope) {
+        for (Link *l = scope->first; l != NULL; l = l->next) {
+            if (strcmp(l->name, name) == 0)
+                return l;
+        }
+        scope = scope->father;
+    }
+    return NULL;
+}
+
+// === Recursive function to build symbol tables by traversing AST ===
+void buildSymbolTable(node *n, Scope *currentScope) {
+    if (!n) return;
+
+    if (strcmp(n->token, "DEREF") == 0)    // לא להתייחס, זה כדי להזכיר לי (קטורה) איפה אני 
+    {
+       
+    }
+
+    // Handle function definitions
+    if (strcmp(n->token, "FUNC") == 0) {
+        char *funcName = n->left->token;  // function name is in left
+        addSymbol(currentScope, funcName, "function");
+
+        Scope *funcScope = createScope(currentScope);  // new scope for function
+
+        node *pars = n->right;  // points to PARS node
+        node *ret = pars->right;  // RET node
+
+        // Handle parameters under PARS
+        node *param = pars->left;
+        while (param) {
+            addSymbol(funcScope, param->token, "param");  // parameter name
+            param = param->right;
+        }
+
+        // Handle declared variables and block
+        node *body = ret->right;
+        node *vars = NULL;
+
+        if (body && body->left) {  // vars exist
+            vars = body->left;
+        }
+
+        node *block = (body && body->right) ? body->right : NULL;
+
+        // Add variables to function scope
+        while (vars) {
+            addSymbol(funcScope, vars->token, "var");
+            vars = vars->right;
+        }
+
+        buildSymbolTable(block, funcScope);  // go into block body
+    }
+
+    // Handle main function
+    else if (strcmp(n->token, "MAIN") == 0) {
+        addSymbol(currentScope, "_main_", "void");
+
+        Scope *mainScope = createScope(currentScope);
+
+        buildSymbolTable(n->left, mainScope);   // var_list
+        buildSymbolTable(n->right, mainScope);  // block
+    }
+
+    // Handle nested nodes (traverse the whole tree)
+    buildSymbolTable(n->left, currentScope);
+    buildSymbolTable(n->right, currentScope);
+}
+
+
+
+// === Function to count number of MAIN nodes in the AST ===
+void checkMainExists(node *n) {
+    if (!n) return;
+
+    if (strcmp(n->token, "MAIN") == 0)
+        MAIN_COUNT++;
+
+    checkMainExists(n->left);
+    checkMainExists(n->right);
+}
+
+// Check if identifier is declared in the current scope
+int isDeclaredInScope(Scope* scope, const char* name) {
+    Link* curr = scope->first;
+    while (curr) {
+        if (strcmp(curr->name, name) == 0) {
+            return 1;
+        }
+        curr = curr->next;
+    }
+    return 0;
+}
+
+// Global root scope
+Scope* globalScope;
+
+
+/*parameter:
+    T_PAR_NUM type T_COLON T_IDENTIFIER_LITERAL {
+        char param_str[100];
+        sprintf(param_str, "(%s %s %s)", $1, $2->token, $4);
+        $$ = mknode(param_str, NULL, NULL);
+    }
+;*/
+
+// Helper function to process parameters in correct order
+void processFunctionParams(node* parsNode, Scope* funcScope) {
+   
+ 
+    node* param = parsNode->left;  // Start with the first parameter
+ 
+    int expectedParNum = 1;
+
+    while (param) {
+        int actualParNum;
+        char type[50], name[50];
+
+        // Parse string like "(par1 INT x)"
+        if (sscanf(param->token, "(par%d %s %s)", &actualParNum, type, name) == 3) {
+            if (actualParNum != expectedParNum) {
+                printf("Semantic Error (code 8): Parameter order mismatch. Expected par%d, got par%d\n ", expectedParNum, actualParNum);
+                semantic_error = 1;
+            }
+
+            // Add parameter name (e.g., "x") to the symbol table
+            addSymbol(funcScope, name, "param");
+        }
+         else {
+            printf("Semantic Error: Invalid parameter format: %s\n", param->token);
+            semantic_error = 1;
+        }
+
+        param = param->right;
+        expectedParNum++;
+    }
+}
+
+// Recursive semantic analysis of the AST
+void traverseAST(node* n, Scope* currentScope) {
+    if (!n) return;
+
+    
+    // Handle function definition node
+    if (strcmp(n->token, "FUNC") == 0) {
+        char* funcName = n->left->token;
+
+        // Check for duplicate function names in current scope
+        if (isDeclaredInScope(currentScope, funcName)) {
+            printf("Semantic Error (code 3): Function '%s' already declared in this scope\n", funcName);
+        } else {
+            addSymbol(currentScope, funcName, "function");
+        }
+
+        // Create a new scope for the function body
+        Scope* funcScope = (Scope*)malloc(sizeof(Scope));
+        funcScope->father = currentScope;
+        funcScope->first = NULL;
+
+        node* pars = n->right;          // PARS node
+        node* ret = pars->right;        // RET/VAR/BLOCK node
+
+        // Add parameters to function scope, checking for correct order
+        processFunctionParams(pars, funcScope);
+
+        // Add variables to function scope
+        node* varBlock = ret->right;
+        if (varBlock && strcmp(varBlock->token, "") == 0) {
+            node* varDecl = varBlock->left;
+            while (varDecl) {
+                addSymbol(funcScope, varDecl->token, "var");
+                varDecl = varDecl->right;
+            }
+            traverseAST(varBlock->right, funcScope);  // Traverse function block
+        } else {
+            traverseAST(varBlock, funcScope);  // Traverse block directly if no var node
+        }
+    }
+
+    // Count main definitions
+    if (strcmp(n->token, "MAIN") == 0) {
         MAIN_COUNT++;
     }
 
-    // מעבר רקורסיבי על כל הילדים
-    checkMainExists(root->left);
-    checkMainExists(root->right);
+    // Continue traversal
+    traverseAST(n->left, currentScope);
+    traverseAST(n->right, currentScope);
 }
 
+// Semantic analysis entry point
 void semanticAnalyzer(node* ast) {
-    checkMainExists(ast);
-    if (MAIN_COUNT==0)
-     printf("Semantic Error (code 1): 'main' function not defined\n");
+    globalScope = (Scope*)malloc(sizeof(Scope));
+    globalScope->father = NULL;
+    globalScope->first = NULL;
 
-    else if (MAIN_COUNT > 1) 
+    traverseAST(ast, globalScope);
+
+    if (MAIN_COUNT == 0)
+        printf("Semantic Error (code 1): 'main' function not defined\n");
+    else if (MAIN_COUNT > 1)
         printf("Semantic Error (code 1): multiple definitions of 'main' function\n");
-     
-    else 
-        printf("OK\n");
-    
+    else
+        printf("Semantic OK\n");
 }
