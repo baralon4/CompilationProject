@@ -1,18 +1,27 @@
-def foo(par1 int:i; par3 int:j; par2 int:k): returns int
-   var
-        type char*:x;
-        type string y[10];
-        type char:z;
+def foo(par1 int:i; par2 int:j): returns int
+    var
+        type int: x;
+        type int: y;
     begin
-        y = "foobar";
-        x = &y[5]; #-> x points to 'r' <-#
-        z = *x; #-> z is 'f' <-#
-        y = "barfoo"; #-> z is still 'f', but x now points to 'o' <-#
+        var
+            type int: y;
+            type int: X;
+        begin
+            x = 1;
+            y = 2;
+            begin
+                x = 2;
+            end
+            y = 3;
+        end
+        return 1;
     end
 
-
-
-def _main_(): 
+def goo(): returns int
     begin
-       return 0;
+        begin
+            begin 
+            end 
+        end
+        return 0;
     end

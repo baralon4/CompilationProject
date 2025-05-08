@@ -19,9 +19,14 @@ typedef struct node
 
 
 typedef struct Scope {
+    char* name;                // Name of the scope (e.g., "main", "if block", etc.)
     struct Scope* father;
-    struct Link* first;
-}Scope;
+    struct Scope* firstChild;
+    struct Scope* nextSibling;
+    struct Link* first;  // your current list of symbols
+} Scope;
+
+
 
 typedef struct Link {
     struct Link* next;
@@ -31,14 +36,28 @@ typedef struct Link {
 }Link;
 
 
+
+
+
 int MAIN_COUNT=0;
 int semantic_error = 0;
+
+// Global root scope
+Scope* globalScope;
 
 node *mknode(char *token, node *left, node *right);
 void printtree(node *root, int indent);
 void print_args(node *args);
 void semanticAnalyzer(node* ast);
 void checkMainExists(node* root);
+void buildSymbolTable(node *n, Scope *currentScope);
+int isDeclaredInScope(Scope* scope, const char* name);
+void processFunctionParams(node* parsNode, Scope* funcScope); 
+void traverseAST(node* n, Scope* currentScope);
+void printSymbolTable(Scope *scope, int depth);
+void addSymbol(Scope *scope, char *name, char *type);
+Scope* createScope(Scope* parent, const char* name);
+
 
 
 int printlevel=0;
@@ -148,7 +167,7 @@ function_list:
 ;
 
 main:
-	T_DEF T_MAIN T_LPAREN T_RPAREN T_COLON var_list block
+	T_DEF T_MAIN T_LPAREN parameter_list T_RPAREN T_COLON var_list block
 	{
 		if(strcmp($2, "_main_") != 0)
 		{
@@ -156,7 +175,7 @@ main:
 			YYABORT;
 		}
 
-		 $$ = mknode("MAIN", $6, $7);	
+		 $$ = mknode("MAIN", $4 ,mknode("VARS",$7, $8));	
 	}
 ;
 
@@ -564,6 +583,7 @@ expr:
 
 int main()
 {
+    globalScope = createScope(NULL, "GLOBAL SCOPE");
     return yyparse();
 }
 
@@ -783,28 +803,10 @@ node *mknode(char *token,node *left,node *right)
     newnode->left = left;
     newnode->right = right;
     newnode->token = newstr;
-    newnode->
     return newnode;
 }
 
 
-
-// === Function to create a new scope ===
-Scope *createScope(Scope *father) {
-    Scope *s = (Scope *)malloc(sizeof(Scope));
-    s->father = father;
-    s->first = NULL;
-    return s;
-}
-
-// === Function to add a symbol to a scope ===
-void addSymbol(Scope *scope, char *name, char *type) {
-    Link *l = (Link *)malloc(sizeof(Link));
-    l->name = strdup(name);
-    l->type = strdup(type);
-    l->next = scope->first;
-    scope->first = l;
-}
 
 // === Function to search for a symbol in scope or any parent scopes ===
 Link *findSymbol(Scope *scope, char *name) {
@@ -818,62 +820,230 @@ Link *findSymbol(Scope *scope, char *name) {
     return NULL;
 }
 
-// === Recursive function to build symbol tables by traversing AST ===
-void buildSymbolTable(node *n, Scope *currentScope) {
+// Check if identifier is declared in the current scope
+int isDeclaredInScope(Scope* scope, const char* name) {
+    Link* curr = scope->first;
+    while (curr) {
+        if (strcmp(curr->name, name) == 0) {
+            return 1;
+        }
+        curr = curr->next;
+    }
+    return 0;
+}
+
+int isDeclaredInFatherScope(Scope* scope, const char* name) {
+    Link* curr = scope->father;
+    
+    while (curr) {
+        for (Link *l = scope->first; l != NULL; l = l->next)
+        {
+            if (strcmp(l->name, name) == 0)
+                return 1;// צריך לעבור על זה
+        }
+        curr = scope -> father; 
+    }
+    return 0;
+}
+
+// === Function to create a new scope ===
+Scope* createScope(Scope* father, const char* name) {
+    Scope* newScope = malloc(sizeof(Scope));
+    newScope->name = name ? strdup(name) : strdup("Unnamed");
+    newScope->father = father;
+    newScope->firstChild = NULL;
+    newScope->nextSibling = NULL;
+    newScope->first = NULL;
+
+    if (father) {
+        if (!father->firstChild) {
+            father->firstChild = newScope;
+        } else {
+            Scope* sibling = father->firstChild;
+            while (sibling->nextSibling)
+                sibling = sibling->nextSibling;
+            sibling->nextSibling = newScope;
+        }
+    }
+
+    return newScope;
+}
+
+
+
+// === Function to add a symbol to a scope ===
+void addSymbol(Scope *scope, char *name, char *type) {
+    printf("ADDING SYMBOL: %s (%s)\n", name, type);
+    Link *l = (Link *)malloc(sizeof(Link));
+    l->name = strdup(name);
+    l->type = strdup(type);
+    l->next = scope->first;
+    scope->first = l;
+}
+
+
+void buildSymbolTable(node *n, Scope *currentScope) 
+
+{
     if (!n) return;
 
-    if (strcmp(n->token, "DEREF") == 0)    // לא להתייחס, זה כדי להזכיר לי (קטורה) איפה אני 
+    // Handling function or procedure
+    if (strcmp(n->token, "FUNC") == 0) 
     {
+        node *var_list = NULL;
+        node *body = NULL;
+        if (!n->left || !n->left->token)
+        {
+            fprintf(stderr, "Error: malformed FUNC node\n");
+            return;
+        }
+        char *funcName = n->left->token; 
+        char nameBuf[100];  // Make sure this is big enough
+        sprintf(nameBuf, "FUNCTION SCOPE %s", funcName);
+        Scope *funcScope = createScope(currentScope, nameBuf );
+
+        // Check if it's a function (has a return type)
+        if (n->right->right && strncmp(n->right->right->token, "RET", 3) == 0)
+        {
+   
+               // It's a function (has a return type)
+            addSymbol(currentScope, funcName, "function");
+
+            // Process return type
+            node *retType = n->right->right;  // The return type node
+            if (retType)
+                {
+                    addSymbol(funcScope, retType->token, "return_type");
+                }
+
+            if(retType->right->left!= NULL && strcmp(retType->right->left->token, "VAR")==0 )
+                {
+                    var_list=retType->right->left;
+                    body= var_list->right;
+                }
+            if(retType->right!=NULL && strcmp(retType->right->token  , "BLOCK")==0 )
+                {
+                    body= retType->right;
+                }
+            
+    
+        } 
+        else
+        {
+
+            // It's a procedure (no return type)
+            addSymbol(currentScope, funcName, "procedure");
+
+            if(n->right->right!= NULL && strcmp(n->right->right->token , "BLOCK")==0 )
+                {
+                   body= n->right->right;
+                }
+            if(n->right->right->left!=NULL && strcmp(n->right->right->left->token , "VAR")==0 )
+                {
+                    var_list= n->right->right->left;
+                    body=var_list->right;
+                }
+        }
        
-    }
-
-    // Handle function definitions
-    if (strcmp(n->token, "FUNC") == 0) {
-        char *funcName = n->left->token;  // function name is in left
-        addSymbol(currentScope, funcName, "function");
-
-        Scope *funcScope = createScope(currentScope);  // new scope for function
-
-        node *pars = n->right;  // points to PARS node
-        node *ret = pars->right;  // RET node
-
-        // Handle parameters under PARS
-        node *param = pars->left;
-        while (param) {
-            addSymbol(funcScope, param->token, "param");  // parameter name
-            param = param->right;
+        // Add parameters to function scope
+        if(n->right->left)
+        { 
+            node *params = n->right->left;
+            while (params)
+                {
+                    addSymbol(funcScope, params->token, "param");
+                    params = params->right;
+                }
         }
 
-        // Handle declared variables and block
-        node *body = ret->right;
-        node *vars = NULL;
 
-        if (body && body->left) {  // vars exist
-            vars = body->left;
+        // Add variables declared in the function/procedure to the function scope
+   if (var_list && strcmp(var_list->token, "VAR") == 0) {
+    node *current = var_list->left;  // var_list_inner
+    while (current) {
+        node *varNode;
+
+        // current יכול להיות עטיפה עם token == "", או ישר var
+        if (current->token && strlen(current->token) > 0) {
+            varNode = current;  // ישר var
+        } else {
+            varNode = current->left;  // עטיפה
         }
 
-        node *block = (body && body->right) ? body->right : NULL;
-
-        // Add variables to function scope
-        while (vars) {
-            addSymbol(funcScope, vars->token, "var");
-            vars = vars->right;
+        if (varNode) {
+            char *varType = varNode->token;  // הטיפוס של המשתנים בקבוצה הזאת
+            node *varNames = varNode->left;  // רשימת var_a
+            while (varNames) {
+                if (varNames->token) {
+                    // פיצול לפי פסיקים
+                    char *copy = strdup(varNames->token);
+                    char *name = strtok(copy, ",");
+                    while (name) {
+                        while (*name == ' ') name++;  // טרימינג התחלה
+                        char fullVar[256];
+                        snprintf(fullVar, sizeof(fullVar), "%s %s", varType ,name );
+                     
+                        addSymbol(funcScope, fullVar ,"var");  // עכשיו הטיפוס נשמר!
+                        name = strtok(NULL, ",");
+                    }
+                    free(copy);
+                }
+                varNames = varNames->right;
+            }
         }
 
-        buildSymbolTable(block, funcScope);  // go into block body
+
+        current = current->right;
+    }
+}
+
+/////////////////////VAR/עד לכאן טיפלתי בפונקציה הזאת. מה שבהמשך שקשור ל-
+/////////////////////כבר לא נראה לי רלוונטי
+
+    
+
+
+     
+        // Proceed with the rest of the function/procedure body
+        node *pars = n->right;            // PARS node (parameters)
+       
+
+        // Add declared variables to function/procedure scope
+       if (body && strcmp(body->token, "VARS") == 0) 
+       {
+            node *varList = body->left;
+            if (varList && strcmp(varList->token, "VARS") == 0) {
+                node *curr = varList->left;
+                while (curr) {
+                    if (curr->left && curr->left->left) {
+                        addSymbol(funcScope, curr->left->left->token, curr->left->token);
+                    }
+                    curr = curr->right;
+                }
+            }
+            // Traverse the rest of the body
+            buildSymbolTable(body->right, funcScope);
+        }
+        return;  // Exit after processing the function/procedure
     }
 
-    // Handle main function
-    else if (strcmp(n->token, "MAIN") == 0) {
-        addSymbol(currentScope, "_main_", "void");
 
-        Scope *mainScope = createScope(currentScope);
+        // Handle other nodes (MAIN, VARS, BODY, etc.)
+        else if (strcmp(n->token, "MAIN") == 0) {
+            addSymbol(currentScope, "_main_", "void");
 
-        buildSymbolTable(n->left, mainScope);   // var_list
-        buildSymbolTable(n->right, mainScope);  // block
-    }
+            Scope *mainScope = createScope(currentScope,"MAIN SCOPE");
 
-    // Handle nested nodes (traverse the whole tree)
+            // VARS and BODY are children of MAIN
+            node *varList = n->right;
+            node *body = varList ? varList->right : NULL;
+
+            buildSymbolTable(varList, mainScope);
+            buildSymbolTable(body, mainScope);
+            return;
+        }
+
+    // Traverse other nodes
     buildSymbolTable(n->left, currentScope);
     buildSymbolTable(n->right, currentScope);
 }
@@ -891,29 +1061,8 @@ void checkMainExists(node *n) {
     checkMainExists(n->right);
 }
 
-// Check if identifier is declared in the current scope
-int isDeclaredInScope(Scope* scope, const char* name) {
-    Link* curr = scope->first;
-    while (curr) {
-        if (strcmp(curr->name, name) == 0) {
-            return 1;
-        }
-        curr = curr->next;
-    }
-    return 0;
-}
-
-// Global root scope
-Scope* globalScope;
 
 
-/*parameter:
-    T_PAR_NUM type T_COLON T_IDENTIFIER_LITERAL {
-        char param_str[100];
-        sprintf(param_str, "(%s %s %s)", $1, $2->token, $4);
-        $$ = mknode(param_str, NULL, NULL);
-    }
-;*/
 
 // Helper function to process parameters in correct order
 void processFunctionParams(node* parsNode, Scope* funcScope) {
@@ -950,7 +1099,6 @@ void processFunctionParams(node* parsNode, Scope* funcScope) {
 // Recursive semantic analysis of the AST
 void traverseAST(node* n, Scope* currentScope) {
     if (!n) return;
-
     
     // Handle function definition node
     if (strcmp(n->token, "FUNC") == 0) {
@@ -959,6 +1107,7 @@ void traverseAST(node* n, Scope* currentScope) {
         // Check for duplicate function names in current scope
         if (isDeclaredInScope(currentScope, funcName)) {
             printf("Semantic Error (code 3): Function '%s' already declared in this scope\n", funcName);
+            exit(1);
         } else {
             addSymbol(currentScope, funcName, "function");
         }
@@ -989,8 +1138,41 @@ void traverseAST(node* n, Scope* currentScope) {
     }
 
     // Count main definitions
-    if (strcmp(n->token, "MAIN") == 0) {
+    else if (strcmp(n->token, "MAIN") == 0) {
         MAIN_COUNT++;
+        if (MAIN_COUNT > 1)
+        {
+            printf("Semantic Error (code 1): multiple definitions of 'main' function\n");
+            exit(1);
+        }
+        if(n->left != NULL)
+        {   
+            printf("Semantic Error (code 2):-------------------------------------------\n");
+            exit(1);
+        }
+    }
+     else if(strcmp(n->token,"CALL")==0)
+    {
+        if(!isDeclaredInFatherScope(currentScope,n->left->token))
+        {
+            printf("Semantic Error (code 5): ---------------------------\n");
+            exit(1);
+        }
+        
+    }
+
+    else if(strcmp(n->token,"=")==0)
+    {
+        if(!isDeclaredInScope(currentScope,n->left->token))
+        {
+            printf("not in current scope");
+            if(!isDeclaredInFatherScope(currentScope,n->left->token))
+            {
+                printf("Semantic Error (code 6): ---------------------------\n");
+                exit(1);
+            }
+        }
+
     }
 
     // Continue traversal
@@ -1000,16 +1182,46 @@ void traverseAST(node* n, Scope* currentScope) {
 
 // Semantic analysis entry point
 void semanticAnalyzer(node* ast) {
-    globalScope = (Scope*)malloc(sizeof(Scope));
     globalScope->father = NULL;
     globalScope->first = NULL;
 
+    buildSymbolTable(ast, globalScope);
+    printf("\n=== Symbol Table ===\n");
+    printSymbolTable(globalScope, 0);
+    
+    
     traverseAST(ast, globalScope);
 
     if (MAIN_COUNT == 0)
         printf("Semantic Error (code 1): 'main' function not defined\n");
-    else if (MAIN_COUNT > 1)
-        printf("Semantic Error (code 1): multiple definitions of 'main' function\n");
-    else
+    else       
         printf("Semantic OK\n");
+   
+}
+
+
+void printIndent(int level) {
+    for (int i = 0; i < level; ++i)
+        printf("│   ");
+}
+
+void printSymbolTable(Scope* scope, int level) {
+    if (!scope) return;
+
+    printIndent(level - 1);
+    if (level > 0) printf("├── ");
+    printf("Scope: %s (Level %d)\n", scope->name ? scope->name : "Unnamed", level);
+
+    Link* sym = scope->first;
+    while (sym) {
+        printIndent(level);
+        printf("├── %s : %s\n", sym->name, sym->type);
+        sym = sym->next;
+    }
+
+    Scope* child = scope->firstChild;
+    while (child) {
+        printSymbolTable(child, level + 1);
+        child = child->nextSibling;
+    }
 }
