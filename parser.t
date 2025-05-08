@@ -1,7 +1,7 @@
 def _main_():
+var
+    type int:x;
+    type int:x;
 begin
-    def foo():
-        begin
-        end
-    call foo();
+    x = 1;
 end

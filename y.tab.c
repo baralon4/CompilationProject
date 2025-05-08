@@ -2869,15 +2869,38 @@ void buildSymbolTable(node *n, Scope *currentScope) {
         buildSymbolTable(n->right->right, mainScope);  // block
     }
 
-    else if(strcmp(n->token, "VARS") == 0)
-    {
-        while(n->left != NULL)
-        {
-            printf("%s %s",n->left->left->left->token,n->left->left->token);
-            addSymbol(currentScope,n->left->left->left->token,n->left->left->token);
+    else if (strcmp(n->token, "VARS") == 0) {
+        node* curr = n->left;
+        while (curr != NULL) {
+            if (curr->left && curr->left->left && curr->left->token) {
+                char* varName = curr->left->left->token;
+                if (isDeclaredInScope(currentScope, varName)) {
+                    printf("Semantic Error (code 4): Variable '%s' already declared in this scope\n", varName);
+                    exit(1);
+                } else {
+                    addSymbol(currentScope, varName, curr->left->token);
+                }
+            }
+            curr = curr->right;
         }
-
     }
+
+
+
+/* עובד לסעיף 6
+    else if (strcmp(n->token, "VARS") == 0) {
+        node* curr = n->left;
+        while (curr != NULL) {
+            if (curr->left && curr->left->left && curr->left->token) {
+                //printf("%s %s\n", curr->left->left->token, curr->left->token);
+                addSymbol(currentScope, curr->left->left->token, curr->left->token);
+            }
+            curr = curr->right;  
+        }
+    }
+
+*/
+
 
         else if(strcmp(n->token, "BODY") == 0)
     {
@@ -3035,6 +3058,7 @@ void semanticAnalyzer(node* ast) {
     globalScope->father = NULL;
     globalScope->first = NULL;
 
+    buildSymbolTable(ast, globalScope);
     traverseAST(ast, globalScope);
 
     if (MAIN_COUNT == 0)
